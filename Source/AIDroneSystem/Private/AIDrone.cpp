@@ -1,4 +1,5 @@
 ﻿#include "AIDrone.h"
+#include "AIDronePlayerController.h"
 #include "Net/UnrealNetwork.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/PlayerController.h"
@@ -114,17 +115,6 @@ void AAIDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 
     if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent))
     {
-        if (APlayerController* PC = Cast<APlayerController>(GetController()))
-        {
-            if (ULocalPlayer* LocalPlayer = PC->GetLocalPlayer())
-            {
-                if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(LocalPlayer))
-                {
-                    Subsystem->AddMappingContext(DroneMappingContext, 2);
-                }
-            }
-        }
-
         EnhancedInputComponent->BindAction(DroneForwardAction, ETriggerEvent::Triggered, this, &AAIDrone::MoveForward);
         EnhancedInputComponent->BindAction(DroneRightAction, ETriggerEvent::Triggered, this, &AAIDrone::MoveRight);
         EnhancedInputComponent->BindAction(DroneUpAction, ETriggerEvent::Triggered, this, &AAIDrone::MoveUp);
@@ -143,13 +133,55 @@ void AAIDrone::PossessedBy(AController* NewController)
     {
         CurrentState = EDroneState::Possessed;
         SetOwner(NewController);
+        
+        UE_LOG(LogTemp, Warning, TEXT("Drone possessed by controller on Server"));
+    }
+}
+
+void AAIDrone::OnRep_PlayerState()
+{
+    Super::OnRep_PlayerState();
+    
+    UE_LOG(LogTemp, Warning, TEXT("Drone OnRep_PlayerState called - Adding input context"));
+    
+    // This runs on the client when PlayerState replicates
+    // Add input mapping context here for the client
+    if (APlayerController* PC = Cast<APlayerController>(GetController()))
+    {
+        if (PC->IsLocalController())
+        {
+            if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
+            {
+                // Clear all contexts first to avoid duplicates
+                Subsystem->ClearAllMappings();
+                
+                // Add drone's input mapping context
+                Subsystem->AddMappingContext(DroneMappingContext, 2);
+                UE_LOG(LogTemp, Warning, TEXT("Drone - Added input mapping context on client"));
+            }
+        }
     }
 }
 
 void AAIDrone::UnPossessed()
 {
     Super::UnPossessed();
-    UE_LOG(LogTemp, Warning, TEXT("UnPossessing..."));
+    
+    UE_LOG(LogTemp, Warning, TEXT("Drone UnPossessed called"));
+    
+    // Remove the drone's input mapping context on the client
+    if (OwningPC && OwningPC->IsLocalController())
+    {
+        if (ULocalPlayer* LocalPlayer = OwningPC->GetLocalPlayer())
+        {
+            if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(LocalPlayer))
+            {
+                Subsystem->RemoveMappingContext(DroneMappingContext);
+                UE_LOG(LogTemp, Warning, TEXT("Removed drone mapping context"));
+            }
+        }
+    }
+
     OwningPC = nullptr;
 
     if (HasAuthority())
@@ -211,8 +243,48 @@ void AAIDrone::LookUp(const FInputActionValue& Value)
 
 void AAIDrone::Unpossess(const FInputActionValue& Value)
 {
-    if (OwningPC) OwningPC->UnPossess();
+    // Call server RPC to unpossess
+    if (IsLocallyControlled())
+    {
+        ServerUnpossess();
+    }
 }
+
+// === Server RPC for unpossession ===
+bool AAIDrone::ServerUnpossess_Validate()
+{
+    return true;
+}
+
+void AAIDrone::ServerUnpossess_Implementation()
+{
+    UE_LOG(LogTemp, Warning, TEXT("Server: ServerUnpossess called"));
+    
+    if (!OwningPC)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Server: No OwningPC, aborting unpossess"));
+        return;
+    }
+    
+    // Cast to our custom controller
+    AAIDronePlayerController* DronePC = Cast<AAIDronePlayerController>(OwningPC);
+    if (!DronePC)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Server: PlayerController is not AAIDronePlayerController! Make sure to set it in GameMode."));
+        return;
+    }
+    
+    // Clear member variables
+    OwningPC = nullptr;
+    
+    // Update drone state
+    CurrentState = EDroneState::Idle;
+    FollowTarget = nullptr;
+    
+    // Use the custom controller's method to switch back
+    DronePC->PossessPreviousPawn();
+}
+// ===================================
 
 // === CRITICAL FIX: Server RPC to sync location, input and rotation ===
 bool AAIDrone::ServerMove_Validate(FVector ClientLocation, FVector InputVector, FRotator ControlRotation, float DeltaTime)

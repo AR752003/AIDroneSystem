@@ -49,6 +49,11 @@ public:
 	AAIDroneSystemCharacter();
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	
+	// === Add possession handling ===
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void UnPossessed() override;
+	virtual void OnRep_PlayerState() override;
+	// ===============================
 
 protected:
 
@@ -64,10 +69,6 @@ protected:
 	virtual void NotifyControllerChanged() override;
 
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
-
-	// virtual void OnRep_PlayerState() override;
-
-	// virtual void PossessedBy(AController* NewController) override;
 
 
 public:
@@ -107,4 +108,3 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerRequestPossessDrone(AAIDrone* DroneToPossess, APlayerController* Requester);
 };
-

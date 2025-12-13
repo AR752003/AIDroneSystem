@@ -44,6 +44,9 @@ public:
     // === CRITICAL FIX: Add RPC to replicate movement input ===
     UFUNCTION(Server, Unreliable, WithValidation)
     void ServerMove(FVector ClientLocation, FVector InputVector, FRotator ControlRotation, float DeltaTime);
+    
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUnpossess();
     // =========================================================
 
     UPROPERTY(ReplicatedUsing = OnRep_State)
@@ -69,6 +72,7 @@ protected:
     virtual void BeginPlay() override;
     virtual void PossessedBy(AController* NewController) override;
     virtual void UnPossessed() override;
+    virtual void OnRep_PlayerState() override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     UFUNCTION()

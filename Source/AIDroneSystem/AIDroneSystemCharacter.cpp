@@ -22,7 +22,6 @@ DEFINE_LOG_CATEGORY(LogTemplateCharacter);
 
 AAIDroneSystemCharacter::AAIDroneSystemCharacter()
 {
-
 	TraceLength = 600.f;
 	
 	// Set size for collision capsule
@@ -66,6 +65,64 @@ void AAIDroneSystemCharacter::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AAIDroneSystemCharacter, AIDrone);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Possession Handling
+
+void AAIDroneSystemCharacter::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+	
+	UE_LOG(LogTemp, Warning, TEXT("Character PossessedBy called on %s"), HasAuthority() ? TEXT("Server") : TEXT("Client"));
+	
+	// This runs on the server only
+	// Input mapping context needs to be added on the client, so we'll do it in OnRep_PlayerState
+}
+
+void AAIDroneSystemCharacter::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	
+	UE_LOG(LogTemp, Warning, TEXT("Character OnRep_PlayerState called - Adding input context"));
+	
+	// This runs on the client when PlayerState replicates
+	// Add input mapping context here for the client
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		if (PlayerController->IsLocalController())
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
+			{
+				// Clear all contexts first to avoid duplicates
+				Subsystem->ClearAllMappings();
+				
+				// Add character's input mapping context
+				Subsystem->AddMappingContext(DefaultMappingContext, 0);
+				UE_LOG(LogTemp, Warning, TEXT("Character - Added input mapping context on client"));
+			}
+		}
+	}
+}
+
+void AAIDroneSystemCharacter::UnPossessed()
+{
+	Super::UnPossessed();
+	
+	UE_LOG(LogTemp, Warning, TEXT("Character UnPossessed called"));
+	
+	// Remove input mapping context when character is unpossessed
+	if (APlayerController* PlayerController = GetController<APlayerController>())
+	{
+		if (PlayerController->IsLocalController())
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
+			{
+				Subsystem->RemoveMappingContext(DefaultMappingContext);
+				UE_LOG(LogTemp, Warning, TEXT("Character unpossessed - Removed input mapping context"));
+			}
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -201,9 +258,7 @@ void AAIDroneSystemCharacter::ServerRequestPossessDrone_Implementation(AAIDrone*
 		{
 			if (FVector::Dist(DroneToPossess->GetActorLocation(), PlayerPawn->GetActorLocation()) <= DroneToPossess->CommandRange)
 			{
-				// Unpossess the character, and possess the drone
-				// Note: UnPossess is not necessary if the Controller automatically handles it, 
-				// but it's safe to be explicit here before possession.
+				// Possess the drone (this will automatically unpossess the character first)
 				Requester->Possess(DroneToPossess); 
                 
 				UE_LOG(LogTemp, Display, TEXT("Server: Successfully possessed drone: %s"), *DroneToPossess->GetName());
@@ -256,4 +311,3 @@ void AAIDroneSystemCharacter::Look(const FInputActionValue& Value)
 		AddControllerPitchInput(LookAxisVector.Y);
 	}
 }
-
