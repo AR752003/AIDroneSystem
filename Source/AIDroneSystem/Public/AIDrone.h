@@ -32,22 +32,17 @@ public:
     virtual void Tick(float DeltaTime) override;
     virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerFollowMe(ACharacter* Player);
-
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerUnfollow();
-
+    /** Public function used by AAIDroneSystemCharacter's Server RPC to update visuals. */
+    void UpdateVisualsAfterStateChange();
+    
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerRequestPossess(APlayerController* Requester);
 
-    // === CRITICAL FIX: Add RPC to replicate movement input ===
     UFUNCTION(Server, Unreliable, WithValidation)
     void ServerMove(FVector ClientLocation, FVector InputVector, FRotator ControlRotation, float DeltaTime);
     
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerUnpossess();
-    // =========================================================
 
     UPROPERTY(ReplicatedUsing = OnRep_State)
     EDroneState CurrentState;

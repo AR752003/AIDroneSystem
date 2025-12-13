@@ -100,11 +100,21 @@ public:
 	double TraceLength;
 
 
+    /** Public wrapper for client input to initiate the follow command. */
 	void DroneFollowMe();
+    /** Public wrapper for client input to initiate the unfollow command. */
 	void DroneUnfollowMe();
 	void PossessDroneRequest();
 	void InteractDroneRequest();
 
+	/** Server RPC to request the drone to start following. Called from DroneFollowMe(). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerRequestDroneFollow(AAIDrone* DroneToCommand, ACharacter* Player);
+
+	/** Server RPC to request the drone to stop following. Called from DroneUnfollowMe(). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerRequestDroneUnfollow(AAIDrone* DroneToCommand);
+	
 	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerRequestPossessDrone(AAIDrone* DroneToPossess, APlayerController* Requester);
 };

@@ -55,7 +55,6 @@ void AAIDrone::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    // === CRITICAL FIX: Properly handle replicated movement ===
     // On the controlling client, send movement to server
     if (IsLocallyControlled() && !HasAuthority())
     {
@@ -69,44 +68,85 @@ void AAIDrone::Tick(float DeltaTime)
     }
 
     // On server (authority), process movement for all pawns
-    if (HasAuthority())
+   if (HasAuthority())
     {
-        // If possessed, don't do autonomous behavior
-        if (GetController() != nullptr)
+        // Only run autonomous (AI) behavior if the drone is not player-controlled.
+        if (CurrentState == EDroneState::Possessed)
         {
-            // Server processes movement for possessed pawns
-            // Movement is already handled by AddMovementInput calls from input
+            // Player-controlled, movement is handled by AddMovementInput calls from input (RPC)
         }
-        else
+        else // Autonomous behavior when Idle or Following
         {
-            // Autonomous behavior when not possessed
             if (CurrentState == EDroneState::Following && FollowTarget && FollowTarget->IsValidLowLevel())
             {
                 FVector Dir = FollowTarget->GetActorLocation() - GetActorLocation();
                 float Dist = Dir.Size();
+                
+                // === Obstacle Avoidance Logic (Simple Ray-Casting) ===
+                FVector AvoidanceVector = FVector::ZeroVector;
+                float AvoidanceDistance = 300.0f; // Distance to check for obstacles
+                float AvoidanceForce = 1.0f;
+                FHitResult HitResult;
+                FCollisionQueryParams Params;
+                Params.AddIgnoredActor(this);
+                
+                // Trace forward to check for immediate obstacles
+                if (GetWorld()->LineTraceSingleByChannel(HitResult, GetActorLocation(), GetActorLocation() + Dir.GetSafeNormal() * AvoidanceDistance, ECC_Visibility, Params))
+                {
+                    FVector HitNormal = HitResult.Normal;
+                    
+                    // Prioritize moving up, if possible.
+                    if (FMath::Abs(HitNormal.Z) < 0.7f)
+                    {
+                        AvoidanceVector = FVector::CrossProduct(HitNormal, GetActorRightVector());
+                        AvoidanceVector.Z += 0.5f; 
+                    }
+                    else
+                    {
+                        // Mostly hitting floor or ceiling, try to move sideways
+                        AvoidanceVector = GetActorRightVector();
+                    }
+                    AvoidanceVector = AvoidanceVector.GetSafeNormal() * AvoidanceForce;
+                }
+                // ======================================================
+
+                FVector TargetDirection = Dir.GetSafeNormal();
+                FVector FinalMoveDirection = (TargetDirection + AvoidanceVector).GetSafeNormal();
+
+                // 1. ROTATION: Rotate towards the final movement direction
+                FRotator TargetRot = FinalMoveDirection.Rotation();
+                TargetRot.Pitch = 0.0f;
+                TargetRot.Roll = 0.0f;
+                FRotator NewRot = FMath::RInterpTo(GetActorRotation(), TargetRot, DeltaTime, 8.0f);
+                SetActorRotation(NewRot);
+                
+                // 2. MOVEMENT: Apply continuous movement input.
+                // The amount of input should be proportional to the distance to maintain the follow distance smoothly.
+                // Use the component's MaxSpeed to scale the input correctly.
+                
+                float MovementMagnitude = 0.0f;
+
                 if (Dist > FollowDistance)
                 {
-                    Dir = Dir.GetSafeNormal();
-                    FRotator TargetRot = Dir.Rotation();
-                    TargetRot.Pitch = 0.0f;
-                    TargetRot.Roll = 0.0f;
-                    FRotator NewRot = FMath::RInterpTo(GetActorRotation(), TargetRot, DeltaTime, 8.0f);
-                    SetActorRotation(NewRot);
-                    AddMovementInput(Dir, 1.0f);
+                    // Scale movement by how far outside the follow distance we are (clamped)
+                    MovementMagnitude = FMath::Clamp((Dist - FollowDistance) / FollowDistance, 0.1f, 1.0f);
                 }
+                
+                // Apply the calculated movement input
+                AddMovementInput(FinalMoveDirection, MovementMagnitude);
+                
             }
             else if (CurrentState == EDroneState::Idle)
             {
+                // Corrected Idle logic: Only hover movement, NO forward drift.
                 float Time = GetWorld()->GetTimeSeconds();
                 float HoverOffset = FMath::Sin(Time * HoverFrequency) * HoverAmplitude;
                 float HoverVelZ = (HoverOffset - LastHoverOffset) / DeltaTime;
                 AddMovementInput(FVector::UpVector, HoverVelZ / MovementComponent->MaxSpeed);
                 LastHoverOffset = HoverOffset;
-                AddMovementInput(GetActorForwardVector(), 0.2f);
             }
         }
     }
-    // =========================================================
 }
 
 void AAIDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -124,6 +164,13 @@ void AAIDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
     }
 }
 
+// === PUBLIC FUNCTION IMPLEMENTATION ===
+void AAIDrone::UpdateVisualsAfterStateChange()
+{
+    // Called by the Character's Server RPC after setting the state.
+    UpdateVisualFeedback();
+}
+
 void AAIDrone::PossessedBy(AController* NewController)
 {
     Super::PossessedBy(NewController);
@@ -133,8 +180,6 @@ void AAIDrone::PossessedBy(AController* NewController)
     {
         CurrentState = EDroneState::Possessed;
         SetOwner(NewController);
-        
-        UE_LOG(LogTemp, Warning, TEXT("Drone possessed by controller on Server"));
     }
 }
 
@@ -142,22 +187,15 @@ void AAIDrone::OnRep_PlayerState()
 {
     Super::OnRep_PlayerState();
     
-    UE_LOG(LogTemp, Warning, TEXT("Drone OnRep_PlayerState called - Adding input context"));
-    
-    // This runs on the client when PlayerState replicates
-    // Add input mapping context here for the client
+    // Add input mapping context on the client
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
     {
         if (PC->IsLocalController())
         {
             if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
             {
-                // Clear all contexts first to avoid duplicates
                 Subsystem->ClearAllMappings();
-                
-                // Add drone's input mapping context
                 Subsystem->AddMappingContext(DroneMappingContext, 2);
-                UE_LOG(LogTemp, Warning, TEXT("Drone - Added input mapping context on client"));
             }
         }
     }
@@ -167,8 +205,6 @@ void AAIDrone::UnPossessed()
 {
     Super::UnPossessed();
     
-    UE_LOG(LogTemp, Warning, TEXT("Drone UnPossessed called"));
-    
     // Remove the drone's input mapping context on the client
     if (OwningPC && OwningPC->IsLocalController())
     {
@@ -177,7 +213,6 @@ void AAIDrone::UnPossessed()
             if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(LocalPlayer))
             {
                 Subsystem->RemoveMappingContext(DroneMappingContext);
-                UE_LOG(LogTemp, Warning, TEXT("Removed drone mapping context"));
             }
         }
     }
@@ -193,6 +228,7 @@ void AAIDrone::UnPossessed()
 
 void AAIDrone::OnRep_State()
 {
+    // This runs on clients when CurrentState replicates
     UpdateVisualFeedback();
 }
 
@@ -215,7 +251,6 @@ void AAIDrone::UpdateVisualFeedback()
     }
 }
 
-// Input handlers use AddMovementInput which accumulates in APawn's internal vector
 void AAIDrone::MoveForward(const FInputActionValue& Value) 
 { 
     AddMovementInput(GetActorForwardVector(), Value.Get<float>()); 
@@ -243,14 +278,12 @@ void AAIDrone::LookUp(const FInputActionValue& Value)
 
 void AAIDrone::Unpossess(const FInputActionValue& Value)
 {
-    // Call server RPC to unpossess
     if (IsLocallyControlled())
     {
         ServerUnpossess();
     }
 }
 
-// === Server RPC for unpossession ===
 bool AAIDrone::ServerUnpossess_Validate()
 {
     return true;
@@ -258,90 +291,41 @@ bool AAIDrone::ServerUnpossess_Validate()
 
 void AAIDrone::ServerUnpossess_Implementation()
 {
-    UE_LOG(LogTemp, Warning, TEXT("Server: ServerUnpossess called"));
+    if (!OwningPC) return;
     
-    if (!OwningPC)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Server: No OwningPC, aborting unpossess"));
-        return;
-    }
-    
-    // Cast to our custom controller
     AAIDronePlayerController* DronePC = Cast<AAIDronePlayerController>(OwningPC);
-    if (!DronePC)
-    {
-        UE_LOG(LogTemp, Error, TEXT("Server: PlayerController is not AAIDronePlayerController! Make sure to set it in GameMode."));
-        return;
-    }
+    if (!DronePC) return;
     
-    // Clear member variables
-    OwningPC = nullptr;
+    // UnPossessed handles state change and cleanup now
     
-    // Update drone state
-    CurrentState = EDroneState::Idle;
-    FollowTarget = nullptr;
-    
-    // Use the custom controller's method to switch back
     DronePC->PossessPreviousPawn();
 }
-// ===================================
 
-// === CRITICAL FIX: Server RPC to sync location, input and rotation ===
 bool AAIDrone::ServerMove_Validate(FVector ClientLocation, FVector InputVector, FRotator ControlRotation, float DeltaTime)
 {
-    // Basic validation - check for reasonable values
     return !ClientLocation.ContainsNaN() && !InputVector.ContainsNaN() && !ControlRotation.ContainsNaN();
 }
 
 void AAIDrone::ServerMove_Implementation(FVector ClientLocation, FVector InputVector, FRotator ControlRotation, float DeltaTime)
 {
-    // Server accepts client's location with some validation
-    // In a production game, you'd want to validate this more strictly
     FVector ServerLocation = GetActorLocation();
     float DistSq = FVector::DistSquared(ClientLocation, ServerLocation);
-    
-    // If client location is too far from server (possible cheat/desync), correct it
-    // Otherwise, trust the client and update server location
-    const float MaxDistSq = 10000.0f; // 100 units squared
+    const float MaxDistSq = 10000.0f;
     
     if (DistSq < MaxDistSq)
     {
-        // Accept client location
         SetActorLocation(ClientLocation);
     }
     
-    // Apply input on server
     if (!InputVector.IsNearlyZero())
     {
         AddMovementInput(InputVector, 1.0f);
     }
     
-    // Apply rotation on server
     if (GetController())
     {
         GetController()->SetControlRotation(ControlRotation);
     }
-}
-// ======================================================================
-
-// RPCs (unchanged)
-bool AAIDrone::ServerFollowMe_Validate(ACharacter* Player) { return Player != nullptr; }
-void AAIDrone::ServerFollowMe_Implementation(ACharacter* Player)
-{
-    if (Player && FVector::Dist(GetActorLocation(), Player->GetActorLocation()) <= CommandRange)
-    {
-        FollowTarget = Player;
-        CurrentState = EDroneState::Following;
-        UpdateVisualFeedback();
-    }
-}
-
-bool AAIDrone::ServerUnfollow_Validate() { return true; }
-void AAIDrone::ServerUnfollow_Implementation()
-{
-    FollowTarget = nullptr;
-    CurrentState = EDroneState::Idle;
-    UpdateVisualFeedback();
 }
 
 bool AAIDrone::ServerRequestPossess_Validate(APlayerController* Requester) { return Requester != nullptr; }

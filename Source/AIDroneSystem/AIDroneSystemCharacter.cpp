@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AIDroneSystemCharacter.h"
-
 #include "AIDrone.h"
-#include "DroneControllerComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -55,9 +53,6 @@ AAIDroneSystemCharacter::AAIDroneSystemCharacter()
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName); // Attach the camera to the end of the boom and let the boom adjust to match the controller orientation
 	FollowCamera->bUsePawnControlRotation = false; // Camera does not rotate relative to arm
-
-	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
-	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
 }
 
 void AAIDroneSystemCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -73,18 +68,11 @@ void AAIDroneSystemCharacter::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 void AAIDroneSystemCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
-	
-	UE_LOG(LogTemp, Warning, TEXT("Character PossessedBy called on %s"), HasAuthority() ? TEXT("Server") : TEXT("Client"));
-	
-	// This runs on the server only
-	// Input mapping context needs to be added on the client, so we'll do it in OnRep_PlayerState
 }
 
 void AAIDroneSystemCharacter::OnRep_PlayerState()
 {
 	Super::OnRep_PlayerState();
-	
-	UE_LOG(LogTemp, Warning, TEXT("Character OnRep_PlayerState called - Adding input context"));
 	
 	// This runs on the client when PlayerState replicates
 	// Add input mapping context here for the client
@@ -94,12 +82,8 @@ void AAIDroneSystemCharacter::OnRep_PlayerState()
 		{
 			if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
 			{
-				// Clear all contexts first to avoid duplicates
 				Subsystem->ClearAllMappings();
-				
-				// Add character's input mapping context
 				Subsystem->AddMappingContext(DefaultMappingContext, 0);
-				UE_LOG(LogTemp, Warning, TEXT("Character - Added input mapping context on client"));
 			}
 		}
 	}
@@ -109,8 +93,6 @@ void AAIDroneSystemCharacter::UnPossessed()
 {
 	Super::UnPossessed();
 	
-	UE_LOG(LogTemp, Warning, TEXT("Character UnPossessed called"));
-	
 	// Remove input mapping context when character is unpossessed
 	if (APlayerController* PlayerController = GetController<APlayerController>())
 	{
@@ -119,7 +101,6 @@ void AAIDroneSystemCharacter::UnPossessed()
 			if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
 			{
 				Subsystem->RemoveMappingContext(DefaultMappingContext);
-				UE_LOG(LogTemp, Warning, TEXT("Character unpossessed - Removed input mapping context"));
 			}
 		}
 	}
@@ -168,60 +149,46 @@ void AAIDroneSystemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerI
 	}
 }
 
+// === Client-side wrappers to initiate Server RPC ===
 void AAIDroneSystemCharacter::DroneFollowMe()
 {
-	UE_LOG(LogTemp, Display, TEXT("DroneFollowMe Begin"));
-	// === MODIFIED: Null Check to prevent crash ===
-	if (AIDrone && AIDrone->IsValidLowLevel())
+	if (AIDrone && AIDrone->IsValidLowLevel() && IsLocallyControlled())
 	{
-		AIDrone->ServerFollowMe(this);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("DroneFollowMe failed: AIDrone is NULL!"));
+		ServerRequestDroneFollow(AIDrone, this);
 	}
 }
 
 void AAIDroneSystemCharacter::DroneUnfollowMe()
 {
-	UE_LOG(LogTemp, Display, TEXT("DroneUnFollowMe Begin"));
-	// === MODIFIED: Null Check to prevent crash ===
-	if (AIDrone && AIDrone->IsValidLowLevel())
+	if (AIDrone && AIDrone->IsValidLowLevel() && IsLocallyControlled())
 	{
-		AIDrone->ServerUnfollow();
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("DroneUnfollowMe failed: AIDrone is NULL!"));
+		ServerRequestDroneUnfollow(AIDrone);
 	}
 }
+// ====================================================
 
 void AAIDroneSystemCharacter::PossessDroneRequest()
 {
-	UE_LOG(LogTemp, Display, TEXT("Possess Drone Request"));
-	
 	if (AIDrone && AIDrone->IsValidLowLevel())
 	{
 		APlayerController* PlayerController = GetController<APlayerController>();
 
-		// === CRITICAL FIX: Call the RPC on the OWNED Character (this) ===
-		// The client calls ServerRequestPossessDrone, which is guaranteed to be forwarded
-		// to the server because 'this' (AAIDroneSystemCharacter) is owned by the client's controller.
 		if (PlayerController && IsLocallyControlled())
 		{
-			// Note: Use 'this' Character's controller as the Requester
 			ServerRequestPossessDrone(AIDrone, PlayerController);
 		}
-		// ===============================================================
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("PossessDroneRequest failed: AIDrone is NULL!"));
 	}
 }
 
 void AAIDroneSystemCharacter::InteractDroneRequest()
 {
+    // New logic: Only trace for a new drone if the player doesn't already have a valid reference.
+    if (AIDrone)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Cannot interact: Player already controls a drone."));
+        return;
+    }
+    
 	FVector2D ViewportSize;
 	GetWorld()->GetGameViewport()->GetViewportSize(ViewportSize);
 	FVector2D ViewportCenter = ViewportSize/2;
@@ -238,34 +205,63 @@ void AAIDroneSystemCharacter::InteractDroneRequest()
 
 	AActor* HitActor = HitResult.GetActor();
 	AAIDrone* DroneActor =  Cast<AAIDrone>(HitActor);
-	if (HitActor && DroneActor)
+	
+    // Set the reference only if a new valid drone is found.
+	if (DroneActor)
 	{
 		AIDrone = DroneActor;
-		// Optionally, log this assignment for debugging.
-		UE_LOG(LogTemp, Display, TEXT("AIDrone successfully assigned via interaction!"));
+        UE_LOG(LogTemp, Warning, TEXT("Drone reference acquired: %s"), *AIDrone->GetName());
+	}
+}
+
+// === Server RPC Implementations (Running on Server) ===
+bool AAIDroneSystemCharacter::ServerRequestDroneFollow_Validate(AAIDrone* DroneToCommand, ACharacter* Player)
+{
+	return (DroneToCommand != nullptr && Player != nullptr);
+}
+
+void AAIDroneSystemCharacter::ServerRequestDroneFollow_Implementation(AAIDrone* DroneToCommand, ACharacter* Player)
+{
+	if (DroneToCommand && Player)
+	{
+		if (FVector::Dist(DroneToCommand->GetActorLocation(), Player->GetActorLocation()) <= DroneToCommand->CommandRange)
+		{
+			DroneToCommand->FollowTarget = Player;
+			DroneToCommand->CurrentState = EDroneState::Following;
+			
+			// Use public wrapper to update visuals on the server
+			DroneToCommand->UpdateVisualsAfterStateChange(); 
+		}
+	}
+}
+
+bool AAIDroneSystemCharacter::ServerRequestDroneUnfollow_Validate(AAIDrone* DroneToCommand)
+{
+	return (DroneToCommand != nullptr);
+}
+
+void AAIDroneSystemCharacter::ServerRequestDroneUnfollow_Implementation(AAIDrone* DroneToCommand)
+{
+	if (DroneToCommand)
+	{
+		DroneToCommand->FollowTarget = nullptr;
+		DroneToCommand->CurrentState = EDroneState::Idle;
+		
+		// Use public wrapper to update visuals on the server
+		DroneToCommand->UpdateVisualsAfterStateChange(); 
 	}
 }
 
 void AAIDroneSystemCharacter::ServerRequestPossessDrone_Implementation(AAIDrone* DroneToPossess,
-	APlayerController* Requester)
+                                                                       APlayerController* Requester)
 {
-	UE_LOG(LogTemp, Display, TEXT("Server: Processing Possess Drone Request."));
-    
-	// Server checks the required distance and state (using AIDrone's original logic)
 	if (DroneToPossess && Requester && DroneToPossess->CurrentState != EDroneState::Possessed)
 	{
 		if (APawn* PlayerPawn = Requester->GetPawn())
 		{
 			if (FVector::Dist(DroneToPossess->GetActorLocation(), PlayerPawn->GetActorLocation()) <= DroneToPossess->CommandRange)
 			{
-				// Possess the drone (this will automatically unpossess the character first)
 				Requester->Possess(DroneToPossess); 
-                
-				UE_LOG(LogTemp, Display, TEXT("Server: Successfully possessed drone: %s"), *DroneToPossess->GetName());
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("Server: Drone too far to possess."));
 			}
 		}
 	}
@@ -275,6 +271,7 @@ bool AAIDroneSystemCharacter::ServerRequestPossessDrone_Validate(AAIDrone* Drone
 {
 	return (Requester != nullptr && DroneToPossess != nullptr);
 }
+// ====================================================
 
 void AAIDroneSystemCharacter::Move(const FInputActionValue& Value)
 {
