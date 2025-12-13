@@ -41,6 +41,11 @@ public:
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerRequestPossess(APlayerController* Requester);
 
+    // === CRITICAL FIX: Add RPC to replicate movement input ===
+    UFUNCTION(Server, Unreliable, WithValidation)
+    void ServerMove(FVector ClientLocation, FVector InputVector, FRotator ControlRotation, float DeltaTime);
+    // =========================================================
+
     UPROPERTY(ReplicatedUsing = OnRep_State)
     EDroneState CurrentState;
 
@@ -105,12 +110,8 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
     UFloatingPawnMovement* MovementComponent;
 
-
-
     UPROPERTY()
     APlayerController* OwningPC;
-
-
 
 private:
     // Input handlers
