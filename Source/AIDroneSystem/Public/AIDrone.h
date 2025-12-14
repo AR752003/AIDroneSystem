@@ -5,7 +5,7 @@
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Camera/CameraComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Components/SceneComponent.h"
+// Removed SphereComponent include
 #include "InputActionValue.h"
 #include "InputMappingContext.h"
 #include "InputAction.h"
@@ -33,9 +33,6 @@ public:
     virtual void Tick(float DeltaTime) override;
     virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-    /** Public function used by AAIDroneSystemCharacter's Server RPC to update visuals. */
-    void UpdateVisualsAfterStateChange();
-    
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerRequestPossess(APlayerController* Requester);
 
@@ -51,7 +48,6 @@ public:
     UPROPERTY(Replicated)
     ACharacter* FollowTarget;
     
-    // Behavior params
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
     float CommandRange = 500.0f;
 
@@ -75,11 +71,8 @@ protected:
     void OnRep_State();
 
     void UpdateVisualFeedback();
-
-    /** Helper to apply the bobbing motion (Stateless) */
     void ApplyHoverPhysics(float DeltaTime);
 
-    // Drone Inputs
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     UInputMappingContext* DroneMappingContext;
 
@@ -96,17 +89,14 @@ protected:
     UInputAction* DroneYawAction;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
-    UInputAction* DronePitchAction;
-
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     UInputAction* UnpossessAction;
 
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-    USceneComponent* Root;
+    // --- REMOVED SphereComponent ---
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
     UCameraComponent* Camera;
 
+    // This will now be the Root
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
     UStaticMeshComponent* DroneMesh;
 
@@ -117,12 +107,10 @@ protected:
     APlayerController* OwningPC;
 
 private:
-    // Input handlers
     void MoveForward(const FInputActionValue& Value);
     void MoveRight(const FInputActionValue& Value);
     void MoveUp(const FInputActionValue& Value);
     void Turn(const FInputActionValue& Value);
-    void LookUp(const FInputActionValue& Value);
     void Unpossess(const FInputActionValue& Value);
 
     FRotator LastSentRotation;

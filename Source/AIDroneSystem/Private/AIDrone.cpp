@@ -18,28 +18,32 @@ AAIDrone::AAIDrone()
     AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
     AIControllerClass = AAIController::StaticClass();
     
-    Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
-    RootComponent = Root;
-
+    // --- UPDATED ROOT: STATIC MESH ---
     DroneMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DroneMesh"));
-    DroneMesh->SetupAttachment(Root);
+    RootComponent = DroneMesh; // Mesh is now the Root
+    
+    // CRITICAL: Set Collision Profile to 'Pawn' so it blocks walls and objects.
+    // Make sure your Static Mesh asset has collision primitives (Simple Collision)!
+    DroneMesh->SetCollisionProfileName(TEXT("Pawn"));
     DroneMesh->SetIsReplicated(true);
 
     Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
-    Camera->SetupAttachment(Root);
+    Camera->SetupAttachment(RootComponent);
     Camera->SetRelativeLocation(FVector(0.0f, 0.0f, 50.0f));
 
+    // Movement updates the Root (The Mesh)
     MovementComponent = CreateDefaultSubobject<UFloatingPawnMovement>(TEXT("MovementComponent"));
-    MovementComponent->UpdatedComponent = Root;
+    MovementComponent->UpdatedComponent = RootComponent;
     MovementComponent->MaxSpeed = 800.0f;
     MovementComponent->Acceleration = 2048.0f;
     MovementComponent->Deceleration = 2048.0f;
 
     CurrentState = EDroneState::Idle;
+    LastSentRotation = FRotator::ZeroRotator;
 
-    bUseControllerRotationPitch = true;
+    bUseControllerRotationPitch = false; // Disable Pitch on Actor
     bUseControllerRotationYaw = true;
-    bUseControllerRotationRoll = true;
+    bUseControllerRotationRoll = false; 
 }
 
 void AAIDrone::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -59,7 +63,6 @@ void AAIDrone::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    // On the controlling client, send movement to server
     if (IsLocallyControlled() && !HasAuthority())
     {
         FVector InputVector = ConsumeMovementInputVector();
@@ -69,32 +72,27 @@ void AAIDrone::Tick(float DeltaTime)
         
         if (!InputVector.IsNearlyZero() || GetVelocity().SizeSquared() > 1.0f || bRotationChanged)
         {
-            ServerMove(GetActorLocation(), InputVector, GetControlRotation(), DeltaTime);
+            ServerMove(GetActorLocation(), InputVector, CurrentControlRotation, DeltaTime);
             LastSentRotation = CurrentControlRotation;
         }
     }
 
-    // On server (authority), process movement for all pawns
    if (HasAuthority())
     {
         if (CurrentState == EDroneState::Possessed)
         {
-            // Player-controlled. 
-            // If the player is NOT pressing input (Input Vector is zero), we apply hover.
             if (GetLastMovementInputVector().IsNearlyZero())
             {
                 ApplyHoverPhysics(DeltaTime);
             }
         }
-        else if (CurrentState == EDroneState::Following && FollowTarget && FollowTarget->IsValidLowLevel())
+        else if (CurrentState == EDroneState::Following && IsValid(FollowTarget))
         {
             FVector Dir = FollowTarget->GetActorLocation() - GetActorLocation();
             float Dist = Dir.Size();
             
-            // If outside follow distance, MOVE
             if (Dist > FollowDistance)
             {
-                // === Obstacle Avoidance Logic ===
                 FVector AvoidanceVector = FVector::ZeroVector;
                 float AvoidanceDistance = 300.0f;
                 float AvoidanceForce = 1.0f;
@@ -116,50 +114,38 @@ void AAIDrone::Tick(float DeltaTime)
                     }
                     AvoidanceVector = AvoidanceVector.GetSafeNormal() * AvoidanceForce;
                 }
-                // ================================
 
                 FVector TargetDirection = Dir.GetSafeNormal();
                 FVector FinalMoveDirection = (TargetDirection + AvoidanceVector).GetSafeNormal();
 
-                // Rotate
                 FRotator TargetRot = FinalMoveDirection.Rotation();
                 TargetRot.Pitch = 0.0f;
                 TargetRot.Roll = 0.0f;
                 FRotator NewRot = FMath::RInterpTo(GetActorRotation(), TargetRot, DeltaTime, 8.0f);
                 SetActorRotation(NewRot);
                 
-                // Move
                 float MovementMagnitude = FMath::Clamp((Dist - FollowDistance) / FollowDistance, 0.1f, 1.0f);
                 AddMovementInput(FinalMoveDirection, MovementMagnitude);
             }
             else 
             {
-                // If inside follow distance (Stationary), HOVER
                 ApplyHoverPhysics(DeltaTime);
             }
         }
         else if (CurrentState == EDroneState::Idle)
         {
-            // Always hover in idle
             ApplyHoverPhysics(DeltaTime);
         }
     }
 }
 
-// === NEW HELPER FUNCTION ===
 void AAIDrone::ApplyHoverPhysics(float DeltaTime)
 {
     float Time = GetWorld()->GetTimeSeconds();
-    
-    // Calculate Sine wave for Current Time and Previous Frame Time
-    // This stateless approach prevents "spikes" when switching states
     float CurrentHoverHeight = FMath::Sin(Time * HoverFrequency) * HoverAmplitude;
     float PreviousHoverHeight = FMath::Sin((Time - DeltaTime) * HoverFrequency) * HoverAmplitude;
-    
-    // Derive Velocity required to move from Previous to Current height
     float HoverVelZ = (CurrentHoverHeight - PreviousHoverHeight) / DeltaTime;
 
-    // Apply scaled input
     if (MovementComponent)
     {
         AddMovementInput(FVector::UpVector, HoverVelZ / MovementComponent->MaxSpeed);
@@ -176,15 +162,8 @@ void AAIDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
         EnhancedInputComponent->BindAction(DroneRightAction, ETriggerEvent::Triggered, this, &AAIDrone::MoveRight);
         EnhancedInputComponent->BindAction(DroneUpAction, ETriggerEvent::Triggered, this, &AAIDrone::MoveUp);
         EnhancedInputComponent->BindAction(DroneYawAction, ETriggerEvent::Triggered, this, &AAIDrone::Turn);
-        EnhancedInputComponent->BindAction(DronePitchAction, ETriggerEvent::Triggered, this, &AAIDrone::LookUp);
         EnhancedInputComponent->BindAction(UnpossessAction, ETriggerEvent::Triggered, this, &AAIDrone::Unpossess);
     }
-}
-
-// === PUBLIC FUNCTION IMPLEMENTATION ===
-void AAIDrone::UpdateVisualsAfterStateChange()
-{
-    UpdateVisualFeedback();
 }
 
 void AAIDrone::PossessedBy(AController* NewController)
@@ -203,7 +182,6 @@ void AAIDrone::OnRep_PlayerState()
 {
     Super::OnRep_PlayerState();
     
-    // Add input mapping context on the client
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
     {
         if (PC->IsLocalController())
@@ -238,8 +216,6 @@ void AAIDrone::UnPossessed()
     {
         CurrentState = EDroneState::Idle;
         FollowTarget = nullptr;
-        
-        // Spawn AI Controller so the drone doesn't freeze
         SpawnDefaultController();
     }
 }
@@ -286,11 +262,6 @@ void AAIDrone::MoveUp(const FInputActionValue& Value)
 void AAIDrone::Turn(const FInputActionValue& Value) 
 { 
     AddControllerYawInput(Value.Get<float>()); 
-}
-
-void AAIDrone::LookUp(const FInputActionValue& Value) 
-{ 
-    AddControllerPitchInput(Value.Get<float>()); 
 }
 
 void AAIDrone::Unpossess(const FInputActionValue& Value)
@@ -342,7 +313,11 @@ void AAIDrone::ServerMove_Implementation(FVector ClientLocation, FVector InputVe
         GetController()->SetControlRotation(ControlRotation);
     }
 
-    SetActorRotation(ControlRotation);
+    // FIX: Force Pitch/Roll to 0 to keep the drone level
+    FRotator NewActorRotation = ControlRotation;
+    NewActorRotation.Pitch = 0.0f;
+    NewActorRotation.Roll = 0.0f;
+    SetActorRotation(NewActorRotation);
 }
 
 bool AAIDrone::ServerRequestPossess_Validate(APlayerController* Requester) { return Requester != nullptr; }

@@ -230,7 +230,7 @@ void AAIDroneSystemCharacter::ServerRequestDroneFollow_Implementation(AAIDrone* 
 			DroneToCommand->CurrentState = EDroneState::Following;
 			
 			// Use public wrapper to update visuals on the server
-			DroneToCommand->UpdateVisualsAfterStateChange(); 
+			
 		}
 	}
 }
@@ -247,8 +247,7 @@ void AAIDroneSystemCharacter::ServerRequestDroneUnfollow_Implementation(AAIDrone
 		DroneToCommand->FollowTarget = nullptr;
 		DroneToCommand->CurrentState = EDroneState::Idle;
 		
-		// Use public wrapper to update visuals on the server
-		DroneToCommand->UpdateVisualsAfterStateChange(); 
+		
 	}
 }
 
