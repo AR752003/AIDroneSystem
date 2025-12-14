@@ -76,6 +76,9 @@ protected:
 
     void UpdateVisualFeedback();
 
+    /** Helper to apply the bobbing motion (Stateless) */
+    void ApplyHoverPhysics(float DeltaTime);
+
     // Drone Inputs
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     UInputMappingContext* DroneMappingContext;
@@ -122,5 +125,5 @@ private:
     void LookUp(const FInputActionValue& Value);
     void Unpossess(const FInputActionValue& Value);
 
-    float LastHoverOffset = 0.0f;
+    FRotator LastSentRotation;
 };
