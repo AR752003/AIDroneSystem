@@ -6,6 +6,7 @@
 #include "GameFramework/Character.h"
 #include "Engine/LocalPlayer.h"
 #include "Kismet/GameplayStatics.h"
+#include "AIController.h"
 #include "Engine/Engine.h"
 
 AAIDrone::AAIDrone()
@@ -14,6 +15,9 @@ AAIDrone::AAIDrone()
     bReplicates = true;
     SetReplicatingMovement(true);
 
+    AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+    AIControllerClass = AAIController::StaticClass();
+    
     Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
     RootComponent = Root;
 
@@ -71,6 +75,7 @@ void AAIDrone::Tick(float DeltaTime)
    if (HasAuthority())
     {
         // Only run autonomous (AI) behavior if the drone is not player-controlled.
+      
         if (CurrentState == EDroneState::Possessed)
         {
             // Player-controlled, movement is handled by AddMovementInput calls from input (RPC)
@@ -147,6 +152,7 @@ void AAIDrone::Tick(float DeltaTime)
             }
         }
     }
+   
 }
 
 void AAIDrone::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -223,6 +229,15 @@ void AAIDrone::UnPossessed()
     {
         CurrentState = EDroneState::Idle;
         FollowTarget = nullptr;
+
+        // --- FIX 2: Prevent Hover Spike ---
+        // Reset the math so the next tick doesn't calculate a huge jump from the last time we were idle
+        float Time = GetWorld()->GetTimeSeconds();
+        LastHoverOffset = FMath::Sin(Time * HoverFrequency) * HoverAmplitude;
+
+        // --- FIX 3: Spawn AI Controller to drive movement ---
+        // This ensures AddMovementInput() is processed by an owning controller
+        SpawnDefaultController();
     }
 }
 
